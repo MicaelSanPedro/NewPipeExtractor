@@ -961,11 +961,13 @@ public class YoutubeStreamExtractor extends StreamExtractor {
         } catch (final SignInConfirmNotBotException botCheckException) {
             // Android-compat patch (TuneGrab): YouTube is blocking anonymous watch access
             // with the Android client ("Sign in to confirm you're not a bot"). Fall back to
-            // the visionOS (android_vr) client, then to the TVHTML5 client, and finally to
-            // the WEB client with a PoToken (if the app provides one), which don't
-            // require a PoToken or are not affected by this bot check. If they
+            // the WEB client with a PoToken (if the app provides one), then to the iOS
+            // client, then to the visionOS (android_vr) client and finally to the TVHTML5
+            // client, which don't require a PoToken or are not affected by this bot check
+            // (the iOS fallback uses a PoToken too when the app provides one). If they all
             // fail too, rethrow the original exception.
             if (!tryUseWebPoAsPrimaryPlayerResponse(contentCountry, localization, videoId)
+                    && !tryUseIosAsPrimaryPlayerResponse(localization, contentCountry, videoId)
                     && !tryUseVisionOsAsPrimaryPlayerResponse(contentCountry, localization, videoId)
                     && !tryUseTvAsPrimaryPlayerResponse(contentCountry, localization, videoId)) {
                 throw botCheckException;
@@ -983,6 +985,47 @@ public class YoutubeStreamExtractor extends StreamExtractor {
 
         if (androidPoTokenResult != null) {
             androidStreamingUrlsPoToken = androidPoTokenResult.streamingDataPoToken;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the iOS player response (with a PoToken when
+     * the app provides one, anonymously otherwise) and uses it as the primary player response,
+     * so streams can still be extracted when YouTube bot-checks the anonymous Android client
+     * and the WEB PoToken path is unavailable.
+     *
+     * @return {@code true} if the iOS player response could be used as the primary one
+     */
+    private boolean tryUseIosAsPrimaryPlayerResponse(
+            @Nonnull final Localization localization,
+            @Nonnull final ContentCountry contentCountry,
+            @Nonnull final String videoId) {
+        try {
+            final PoTokenProvider poTokenProviderInstance = poTokenProvider;
+            final PoTokenResult iosPoTokenResult = poTokenProviderInstance == null
+                    ? null : poTokenProviderInstance.getIosClientPoToken(videoId);
+            iosCpn = generateContentPlaybackNonce();
+
+            final JsonObject iosPlayerResponse = YoutubeStreamHelper.getIosPlayerResponse(
+                    contentCountry, localization, videoId, iosCpn, iosPoTokenResult);
+            if (isPlayerResponseNotValid(iosPlayerResponse, videoId)) {
+                return false;
+            }
+            checkPlayabilityStatus(iosPlayerResponse.getObject(PLAYABILITY_STATUS));
+            playerResponse = iosPlayerResponse;
+            iosStreamingData = iosPlayerResponse.getObject(STREAMING_DATA);
+
+            if (isNullOrEmpty(playerCaptionsTracklistRenderer)) {
+                playerCaptionsTracklistRenderer = iosPlayerResponse.getObject(CAPTIONS)
+                        .getObject(PLAYER_CAPTIONS_TRACKLIST_RENDERER);
+            }
+
+            if (iosPoTokenResult != null) {
+                iosStreamingUrlsPoToken = iosPoTokenResult.streamingDataPoToken;
+            }
+            return true;
+        } catch (final Exception e) {
+            return false;
         }
     }
 
@@ -1151,6 +1194,11 @@ public class YoutubeStreamExtractor extends StreamExtractor {
                                 @Nonnull final String videoId,
                                 @Nullable final PoTokenResult iosPoTokenResult) {
         try {
+            // Android-compat patch (TuneGrab): if the iOS client was already fetched as the
+            // fallback primary player response (Android client bot check), don't refetch it
+            if (iosStreamingData != null) {
+                return;
+            }
             iosCpn = generateContentPlaybackNonce();
 
             final JsonObject iosPlayerResponse = YoutubeStreamHelper.getIosPlayerResponse(
