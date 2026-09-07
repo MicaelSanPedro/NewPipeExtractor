@@ -135,6 +135,11 @@ public class YoutubeStreamExtractor extends StreamExtractor {
     private JsonObject androidStreamingData;
     @Nullable
     private JsonObject tvStreamingData;
+    // Android-compat patch (TuneGrab): WEB client streaming data fetched with a PoToken
+    @Nullable
+    private JsonObject webPoStreamingData;
+    @Nullable
+    private String webPoStreamingUrlsPoToken;
 
     private JsonObject videoPrimaryInfoRenderer;
     private JsonObject videoSecondaryInfoRenderer;
@@ -152,6 +157,8 @@ public class YoutubeStreamExtractor extends StreamExtractor {
     private String iosCpn;
     private String androidCpn;
     private String tvCpn;
+    // Android-compat patch (TuneGrab)
+    private String webPoCpn;
 
     @Nullable
     private String androidStreamingUrlsPoToken;
@@ -862,6 +869,10 @@ public class YoutubeStreamExtractor extends StreamExtractor {
         fetchVisionOsClient(localization, contentCountry, videoId);
         fetchTvClient(localization, contentCountry, videoId);
 
+        // Android-compat patch (TuneGrab): optional WEB player request with a PoToken,
+        // which still works when YouTube bot-checks all anonymous clients
+        fetchWebPoTokenClient(localization, contentCountry, videoId);
+
         fetchWebClientMetadataAndSetThumbnails(localization, contentCountry, videoId);
 
         final byte[] nextBody = JsonWriter.string(
@@ -950,10 +961,12 @@ public class YoutubeStreamExtractor extends StreamExtractor {
         } catch (final SignInConfirmNotBotException botCheckException) {
             // Android-compat patch (TuneGrab): YouTube is blocking anonymous watch access
             // with the Android client ("Sign in to confirm you're not a bot"). Fall back to
-            // the visionOS (android_vr) client, then to the TVHTML5 client, which don't
-            // require a PoToken and are currently not affected by this bot check. If they
+            // the visionOS (android_vr) client, then to the TVHTML5 client, and finally to
+            // the WEB client with a PoToken (if the app provides one), which don't
+            // require a PoToken or are not affected by this bot check. If they
             // fail too, rethrow the original exception.
-            if (!tryUseVisionOsAsPrimaryPlayerResponse(contentCountry, localization, videoId)
+            if (!tryUseWebPoAsPrimaryPlayerResponse(contentCountry, localization, videoId)
+                    && !tryUseVisionOsAsPrimaryPlayerResponse(contentCountry, localization, videoId)
                     && !tryUseTvAsPrimaryPlayerResponse(contentCountry, localization, videoId)) {
                 throw botCheckException;
             }
@@ -1026,6 +1039,82 @@ public class YoutubeStreamExtractor extends StreamExtractor {
             return true;
         } catch (final Exception e) {
             return false;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the WEB client player response with a PoToken
+     * and uses it as the primary player response, so streams can still be extracted when
+     * YouTube bot-checks the anonymous Android, visionOS and TVHTML5 clients.
+     *
+     * @return {@code true} if the WEB player response could be used as the primary one
+     */
+    private boolean tryUseWebPoAsPrimaryPlayerResponse(
+            @Nonnull final ContentCountry contentCountry,
+            @Nonnull final Localization localization,
+            @Nonnull final String videoId) {
+        try {
+            final PoTokenProvider poTokenProviderInstance = poTokenProvider;
+            if (poTokenProviderInstance == null) {
+                return false;
+            }
+            final PoTokenResult webPoTokenResult =
+                    poTokenProviderInstance.getWebClientPoToken(videoId);
+            if (webPoTokenResult == null) {
+                return false;
+            }
+            webPoCpn = generateContentPlaybackNonce();
+
+            final JsonObject webPlayerResponse = YoutubeStreamHelper.getWebPoTokenPlayerResponse(
+                    contentCountry, localization, videoId, webPoCpn, webPoTokenResult);
+            if (isPlayerResponseNotValid(webPlayerResponse, videoId)) {
+                return false;
+            }
+            checkPlayabilityStatus(webPlayerResponse.getObject(PLAYABILITY_STATUS));
+            playerResponse = webPlayerResponse;
+            webPoStreamingData = webPlayerResponse.getObject(STREAMING_DATA);
+            webPoStreamingUrlsPoToken = webPoTokenResult.streamingDataPoToken;
+            return true;
+        } catch (final Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the WEB client player response with a PoToken
+     * provided by the app's {@link PoTokenProvider}, if there is one. Its streaming data is
+     * used as the first source of stream URLs, as they are guaranteed to work when anonymous
+     * clients are bot-checked. This fetch is optional: all failures are ignored.
+     */
+    private void fetchWebPoTokenClient(@Nonnull final Localization localization,
+                                       @Nonnull final ContentCountry contentCountry,
+                                       @Nonnull final String videoId) {
+        try {
+            // already fetched as the fallback primary player response
+            if (webPoStreamingData != null) {
+                return;
+            }
+            final PoTokenProvider poTokenProviderInstance = poTokenProvider;
+            if (poTokenProviderInstance == null) {
+                return;
+            }
+            final PoTokenResult webPoTokenResult =
+                    poTokenProviderInstance.getWebClientPoToken(videoId);
+            if (webPoTokenResult == null) {
+                return;
+            }
+            webPoCpn = generateContentPlaybackNonce();
+
+            final JsonObject webPlayerResponse = YoutubeStreamHelper.getWebPoTokenPlayerResponse(
+                    contentCountry, localization, videoId, webPoCpn, webPoTokenResult);
+
+            if (!isPlayerResponseNotValid(webPlayerResponse, videoId)
+                    && !isNullOrEmpty(webPlayerResponse.getObject(STREAMING_DATA))) {
+                webPoStreamingData = webPlayerResponse.getObject(STREAMING_DATA);
+                webPoStreamingUrlsPoToken = webPoTokenResult.streamingDataPoToken;
+            }
+        } catch (final Exception ignored) {
+            // This fetch is not compulsory, so ignore all its failures
         }
     }
 
@@ -1240,15 +1329,19 @@ public class YoutubeStreamExtractor extends StreamExtractor {
             final List<T> streamList = new ArrayList<>();
 
             java.util.stream.Stream.of(
-                    // Android-compat patch (TuneGrab): the TVHTML5 client comes first because
-                    // its stream URLs currently don't require a PoToken, unlike the Android
-                    // and iOS ones; containSimilarStream below keeps the first itag found
+                    // Android-compat patch (TuneGrab): the WEB client fetched with a PoToken
+                    // comes first (its stream URLs are guaranteed to not be gated when a valid
+                    // PoToken was provided), then the TVHTML5 client (whose stream URLs
+                    // currently don't require a PoToken), then the PoToken-gated iOS/Android
+                    // clients and finally the visionOS one; containSimilarStream below keeps
+                    // the first itag found
+                    new Pair<>(webPoStreamingData, new Pair<>(webPoCpn, webPoStreamingUrlsPoToken)),
                     new Pair<>(tvStreamingData, new Pair<>(tvCpn, (String) null)),
                     new Pair<>(androidStreamingData,
                             new Pair<>(androidCpn, androidStreamingUrlsPoToken)),
-                    new Pair<>(visionOsStreamingData, new Pair<>(visionOsCpn, (String) null)),
                     new Pair<>(iosStreamingData,
-                            new Pair<>(iosCpn, iosStreamingUrlsPoToken)))
+                            new Pair<>(iosCpn, iosStreamingUrlsPoToken)),
+                    new Pair<>(visionOsStreamingData, new Pair<>(visionOsCpn, (String) null)))
                     .flatMap(pair -> getStreamsFromStreamingDataKey(
                             videoId,
                             pair.getFirst(),
