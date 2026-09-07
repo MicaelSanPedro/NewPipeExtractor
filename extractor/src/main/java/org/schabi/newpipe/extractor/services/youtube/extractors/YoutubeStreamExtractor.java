@@ -133,6 +133,8 @@ public class YoutubeStreamExtractor extends StreamExtractor {
     private JsonObject iosStreamingData;
     @Nullable
     private JsonObject androidStreamingData;
+    @Nullable
+    private JsonObject tvStreamingData;
 
     private JsonObject videoPrimaryInfoRenderer;
     private JsonObject videoSecondaryInfoRenderer;
@@ -149,6 +151,7 @@ public class YoutubeStreamExtractor extends StreamExtractor {
     private String visionOsCpn;
     private String iosCpn;
     private String androidCpn;
+    private String tvCpn;
 
     @Nullable
     private String androidStreamingUrlsPoToken;
@@ -857,6 +860,7 @@ public class YoutubeStreamExtractor extends StreamExtractor {
         }
 
         fetchVisionOsClient(localization, contentCountry, videoId);
+        fetchTvClient(localization, contentCountry, videoId);
 
         fetchWebClientMetadataAndSetThumbnails(localization, contentCountry, videoId);
 
@@ -941,7 +945,20 @@ public class YoutubeStreamExtractor extends StreamExtractor {
                     androidPoTokenResult);
         }
 
-        checkPlayabilityStatus(playerResponse.getObject(PLAYABILITY_STATUS));
+        try {
+            checkPlayabilityStatus(playerResponse.getObject(PLAYABILITY_STATUS));
+        } catch (final SignInConfirmNotBotException botCheckException) {
+            // Android-compat patch (TuneGrab): YouTube is blocking anonymous watch access
+            // with the Android client ("Sign in to confirm you're not a bot"). Fall back to
+            // the visionOS (android_vr) client, then to the TVHTML5 client, which don't
+            // require a PoToken and are currently not affected by this bot check. If they
+            // fail too, rethrow the original exception.
+            if (!tryUseVisionOsAsPrimaryPlayerResponse(contentCountry, localization, videoId)
+                    && !tryUseTvAsPrimaryPlayerResponse(contentCountry, localization, videoId)) {
+                throw botCheckException;
+            }
+            return;
+        }
         if (isPlayerResponseNotValid(playerResponse, videoId)) {
             throw new ExtractionException("ANDROID player response is not valid");
         }
@@ -953,6 +970,90 @@ public class YoutubeStreamExtractor extends StreamExtractor {
 
         if (androidPoTokenResult != null) {
             androidStreamingUrlsPoToken = androidPoTokenResult.streamingDataPoToken;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the visionOS (android_vr) player response and
+     * uses it as the primary player response, so streams can still be extracted when YouTube
+     * blocks the anonymous Android client with a bot check.
+     *
+     * @return {@code true} if the visionOS player response could be used as the primary one
+     */
+    private boolean tryUseVisionOsAsPrimaryPlayerResponse(
+            @Nonnull final ContentCountry contentCountry,
+            @Nonnull final Localization localization,
+            @Nonnull final String videoId) {
+        try {
+            visionOsCpn = generateContentPlaybackNonce();
+            final JsonObject visionOsPlayerResponse =
+                    YoutubeStreamHelper.getVisionOsPlayerResponse(
+                            contentCountry, localization, videoId, visionOsCpn);
+            if (isPlayerResponseNotValid(visionOsPlayerResponse, videoId)) {
+                return false;
+            }
+            checkPlayabilityStatus(visionOsPlayerResponse.getObject(PLAYABILITY_STATUS));
+            playerResponse = visionOsPlayerResponse;
+            visionOsStreamingData = visionOsPlayerResponse.getObject(STREAMING_DATA);
+            return true;
+        } catch (final Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the TVHTML5 player response and uses it as
+     * the primary player response, so streams can still be extracted when YouTube blocks
+     * the anonymous Android and visionOS clients with a bot check.
+     *
+     * @return {@code true} if the TVHTML5 player response could be used as the primary one
+     */
+    private boolean tryUseTvAsPrimaryPlayerResponse(
+            @Nonnull final ContentCountry contentCountry,
+            @Nonnull final Localization localization,
+            @Nonnull final String videoId) {
+        try {
+            tvCpn = generateContentPlaybackNonce();
+            final JsonObject tvPlayerResponse =
+                    YoutubeStreamHelper.getTvPlayerResponse(
+                            contentCountry, localization, videoId, tvCpn);
+            if (isPlayerResponseNotValid(tvPlayerResponse, videoId)) {
+                return false;
+            }
+            checkPlayabilityStatus(tvPlayerResponse.getObject(PLAYABILITY_STATUS));
+            playerResponse = tvPlayerResponse;
+            tvStreamingData = tvPlayerResponse.getObject(STREAMING_DATA);
+            return true;
+        } catch (final Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetches the TVHTML5 (YouTube TV) player response,
+     * whose stream URLs currently don't require a PoToken for most videos. It is optional:
+     * failures are ignored, and the Android/visionOS/iOS clients are still used as before.
+     */
+    private void fetchTvClient(@Nonnull final Localization localization,
+                               @Nonnull final ContentCountry contentCountry,
+                               @Nonnull final String videoId) {
+        try {
+            // already fetched as the fallback primary player response
+            if (tvStreamingData != null) {
+                return;
+            }
+            tvCpn = generateContentPlaybackNonce();
+
+            final JsonObject tvPlayerResponse = YoutubeStreamHelper.getTvPlayerResponse(
+                    contentCountry, localization, videoId, tvCpn);
+
+            if (!isPlayerResponseNotValid(tvPlayerResponse, videoId)
+                    && !isNullOrEmpty(tvPlayerResponse.getObject(STREAMING_DATA))) {
+                tvStreamingData = tvPlayerResponse.getObject(STREAMING_DATA);
+            }
+        } catch (final Exception ignored) {
+            // Ignore exceptions related to TVHTML5 client fetching or parsing, as it is not
+            // compulsory to play contents
         }
     }
 
@@ -988,6 +1089,11 @@ public class YoutubeStreamExtractor extends StreamExtractor {
                                      @Nonnull final ContentCountry contentCountry,
                                      @Nonnull final String videoId) {
         try {
+            // Android-compat patch (TuneGrab): if the visionOS client was already fetched as
+            // the fallback primary player response (Android client bot check), don't refetch it
+            if (visionOsStreamingData != null) {
+                return;
+            }
             visionOsCpn = generateContentPlaybackNonce();
 
             final JsonObject visionOsPlayerResponse = YoutubeStreamHelper.getVisionOsPlayerResponse(
@@ -1134,6 +1240,10 @@ public class YoutubeStreamExtractor extends StreamExtractor {
             final List<T> streamList = new ArrayList<>();
 
             java.util.stream.Stream.of(
+                    // Android-compat patch (TuneGrab): the TVHTML5 client comes first because
+                    // its stream URLs currently don't require a PoToken, unlike the Android
+                    // and iOS ones; containSimilarStream below keeps the first itag found
+                    new Pair<>(tvStreamingData, new Pair<>(tvCpn, (String) null)),
                     new Pair<>(androidStreamingData,
                             new Pair<>(androidCpn, androidStreamingUrlsPoToken)),
                     new Pair<>(visionOsStreamingData, new Pair<>(visionOsCpn, (String) null)),

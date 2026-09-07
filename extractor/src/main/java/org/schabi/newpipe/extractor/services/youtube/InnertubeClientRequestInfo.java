@@ -14,6 +14,9 @@ import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.IOS
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.IOS_DEVICE_MODEL;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.IOS_OS_VERSION;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.MOBILE_CLIENT_PLATFORM;
+import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.TVHTML5_CLIENT_ID;
+import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.TVHTML5_CLIENT_NAME;
+import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.TVHTML5_CLIENT_VERSION;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.VISIONOS_CLIENT_ID;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.VISIONOS_CLIENT_NAME;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.VISIONOS_CLIENT_VERSION;
@@ -155,5 +158,15 @@ public final class InnertubeClientRequestInfo {
                         VISIONOS_CLIENT_VERSION, VISIONOS_CLIENT_ID, WATCH_CLIENT_SCREEN, null),
                 new InnertubeClientRequestInfo.DeviceInfo(MOBILE_CLIENT_PLATFORM, "Apple",
                         VISIONOS_DEVICE_MODEL, "visionOS", VISIONOS_VERSION, -1));
+    }
+
+    // Android-compat patch (TuneGrab): TVHTML5 client request info
+    @Nonnull
+    public static InnertubeClientRequestInfo ofTvClient() {
+        return new InnertubeClientRequestInfo(
+                new InnertubeClientRequestInfo.ClientInfo(TVHTML5_CLIENT_NAME,
+                        TVHTML5_CLIENT_VERSION, TVHTML5_CLIENT_ID, WATCH_CLIENT_SCREEN, null),
+                new InnertubeClientRequestInfo.DeviceInfo(DESKTOP_CLIENT_PLATFORM, null, null,
+                        null, null, -1));
     }
 }

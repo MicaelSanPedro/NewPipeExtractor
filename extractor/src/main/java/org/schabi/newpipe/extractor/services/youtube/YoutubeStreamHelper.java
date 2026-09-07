@@ -17,6 +17,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.schabi.newpipe.extractor.NewPipe.getDownloader;
+import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.TVHTML5_CLIENT_ID;
+import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.TVHTML5_CLIENT_VERSION;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.WEB_EMBEDDED_CLIENT_ID;
 import static org.schabi.newpipe.extractor.services.youtube.ClientsConstants.WEB_EMBEDDED_CLIENT_VERSION;
 import static org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper.CONTENT_CHECK_OK;
@@ -43,6 +45,13 @@ public final class YoutubeStreamHelper {
     private static final String SERVICE_INTEGRITY_DIMENSIONS = "serviceIntegrityDimensions";
     private static final String PO_TOKEN = "poToken";
     private static final String BASE_YT_DESKTOP_WATCH_URL = "https://www.youtube.com/watch?v=";
+
+    /**
+     * Android-compat patch (TuneGrab): the user agent of the TVHTML5 client, like the one
+     * used by the Cobalt player of YouTube TV clients.
+     */
+    private static final String TVHTML5_USER_AGENT =
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version";
 
     private YoutubeStreamHelper() {
     }
@@ -256,6 +265,53 @@ public final class YoutubeStreamHelper {
 
         final String url = YOUTUBEI_V1_GAPIS_URL + PLAYER + "?" + DISABLE_PRETTY_PRINT_PARAMETER
                 + "&t=" + generateTParameter() + "&id=" + videoId;
+
+        return JsonUtils.toJsonObject(getValidJsonResponseBody(
+                getDownloader().postWithContentTypeJson(url, headers, body, localization)));
+    }
+
+    /**
+     * Android-compat patch (TuneGrab): fetch the player response of the TVHTML5 client.
+     *
+     * <p>
+     * The TVHTML5 client currently returns stream URLs which don't require a PoToken for
+     * most non age-restricted videos, unlike the Android and iOS clients.
+     * </p>
+     *
+     * @param contentCountry the content country to use
+     * @param localization   the localization to use
+     * @param videoId        the video id for which the player response will be fetched
+     * @param cpn            the content playback nonce to use
+     * @return an unvalidated player response of the TVHTML5 client
+     */
+    @Nonnull
+    public static JsonObject getTvPlayerResponse(@Nonnull final ContentCountry contentCountry,
+                                                 @Nonnull final Localization localization,
+                                                 @Nonnull final String videoId,
+                                                 @Nonnull final String cpn)
+            throws IOException, ExtractionException {
+        final InnertubeClientRequestInfo innertubeClientRequestInfo =
+                InnertubeClientRequestInfo.ofTvClient();
+
+        final Map<String, List<String>> headers = new HashMap<>(
+                getClientHeaders(TVHTML5_CLIENT_ID, TVHTML5_CLIENT_VERSION));
+        headers.put("User-Agent", List.of(TVHTML5_USER_AGENT));
+
+        // We must always pass a valid visitorData to get valid player responses, which needs
+        // to be got from YouTube
+        innertubeClientRequestInfo.clientInfo.visitorData =
+                YoutubeParsingHelper.getVisitorDataFromInnertube(innertubeClientRequestInfo,
+                        localization, contentCountry, headers, YOUTUBEI_V1_URL, null, false);
+
+        final JsonBuilder<JsonObject> builder = prepareJsonBuilder(localization, contentCountry,
+                innertubeClientRequestInfo, null);
+
+        addVideoIdCpnAndOkChecks(builder, videoId, cpn);
+
+        final byte[] body = JsonWriter.string(builder.done())
+                .getBytes(StandardCharsets.UTF_8);
+
+        final String url = YOUTUBEI_V1_URL + PLAYER + "?" + DISABLE_PRETTY_PRINT_PARAMETER;
 
         return JsonUtils.toJsonObject(getValidJsonResponseBody(
                 getDownloader().postWithContentTypeJson(url, headers, body, localization)));

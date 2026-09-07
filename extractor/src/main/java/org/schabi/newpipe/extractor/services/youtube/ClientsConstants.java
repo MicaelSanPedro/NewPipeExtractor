@@ -39,6 +39,15 @@ final class ClientsConstants {
     static final String WEB_MUSIC_ANALYTICS_CLIENT_NAME = "WEB_MUSIC_ANALYTICS";
     static final String WEB_MUSIC_ANALYTICS_CLIENT_VERSION = "2.0";
 
+    // TVHTML5 (YouTube TV) client fields
+    // Android-compat patch (TuneGrab): added to allow fetching stream URLs which don't
+    // require a PoToken for most non age-restricted videos (same client as the one used
+    // as a fallback by yt-dlp)
+
+    static final String TVHTML5_CLIENT_ID = "7";
+    static final String TVHTML5_CLIENT_NAME = "TVHTML5";
+    static final String TVHTML5_CLIENT_VERSION = "7.20250122.15.00";
+
     // IOS (iOS YouTube app) client fields
 
     static final String IOS_CLIENT_ID = "5";
