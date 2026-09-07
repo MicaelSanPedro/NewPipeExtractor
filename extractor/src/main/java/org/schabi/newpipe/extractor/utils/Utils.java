@@ -2,6 +2,7 @@ package org.schabi.newpipe.extractor.utils;
 
 import org.schabi.newpipe.extractor.exceptions.ParsingException;
 
+import java.io.UnsupportedEncodingException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.net.URLDecoder;
@@ -27,6 +28,15 @@ public final class Utils {
         // no instance
     }
 
+    /*
+     * ANDROID COMPATIBILITY PATCH (TuneGrab fork):
+     * The URLDecoder.decode(String, Charset) and URLEncoder.encode(String, Charset)
+     * overloads were added in Java 10 and are only available on Android API 33+.
+     * Calling them on older devices throws NoSuchMethodError. We therefore use the
+     * legacy String-charsetName overloads (available since Java 1.4 / Android API 1),
+     * which have identical behavior for UTF-8.
+     */
+
     /**
      * Encodes a string to URL format using the UTF-8 character set.
      *
@@ -34,7 +44,12 @@ public final class Utils {
      * @return The encoded URL.
      */
     public static String encodeUrlUtf8(final String string) {
-        return URLEncoder.encode(string, StandardCharsets.UTF_8);
+        try {
+            return URLEncoder.encode(string, "UTF-8");
+        } catch (final UnsupportedEncodingException e) {
+            // UTF-8 is always supported on Android and standard JVMs
+            throw new IllegalStateException("UTF-8 encoding not supported", e);
+        }
     }
 
     /**
@@ -43,7 +58,12 @@ public final class Utils {
      * @return The decoded URL.
      */
     public static String decodeUrlUtf8(final String url) {
-        return URLDecoder.decode(url, StandardCharsets.UTF_8);
+        try {
+            return URLDecoder.decode(url, "UTF-8");
+        } catch (final UnsupportedEncodingException e) {
+            // UTF-8 is always supported on Android and standard JVMs
+            throw new IllegalStateException("UTF-8 decoding not supported", e);
+        }
     }
 
     /**
@@ -300,7 +320,17 @@ public final class Utils {
     }
 
     public static boolean isBlank(final String string) {
-        return string == null || string.isBlank();
+        // ANDROID COMPATIBILITY PATCH (TuneGrab fork): String.isBlank() is a
+        // Java 11 method only available on Android API 33+, so reimplement it here.
+        if (string == null) {
+            return true;
+        }
+        for (int i = 0; i < string.length(); i++) {
+            if (!Character.isWhitespace(string.charAt(i))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     @Nonnull
